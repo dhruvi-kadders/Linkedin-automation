@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LinkedIn Auto-Apply Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <span class="brand-icon">[]</span>
+    <span class="brand-text">LinkedBot</span>
+  </div>
+  <nav class="sidebar-nav">
+    <a href="#" class="nav-item active" data-tab="dashboard">
+      <span class="nav-icon">D</span> Dashboard
+    </a>
+    <a href="#" class="nav-item" data-tab="accounts">
+      <span class="nav-icon">A</span> Accounts
+    </a>
+    <a href="#" class="nav-item" data-tab="search">
+      <span class="nav-icon">S</span> Search Jobs
+    </a>
+    <a href="#" class="nav-item" data-tab="qa">
+      <span class="nav-icon">Q</span> Q&A Templates
+    </a>
+    <a href="#" class="nav-item" data-tab="manual">
+      <span class="nav-icon">M</span> Manual Review
+    </a>
+    <a href="#" class="nav-item" data-tab="logs">
+      <span class="nav-icon">L</span> Live Logs
+    </a>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="connection-status" id="sseStatus">
+      <span class="status-dot offline"></span> Connecting...
+    </div>
+  </div>
+</aside>
+
+<main class="main">
+  <section class="tab-panel active" id="tab-dashboard">
+    <div class="page-header">
+      <h1>Dashboard</h1>
+      <div class="header-actions">
+        <button class="btn btn-danger" id="stopAllBtn">Stop All</button>
+        <button class="btn btn-primary" id="startAllBtn">Start All</button>
+      </div>
+    </div>
+
+    <div class="stats-bar" id="statsBar">
+      <div class="stat-card">
+        <div class="stat-num" id="statRunning">0</div>
+        <div class="stat-label">Running</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" id="statApplied">0</div>
+        <div class="stat-label">Applied</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" id="statManual">0</div>
+        <div class="stat-label">Manual Review</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" id="statFailed">0</div>
+        <div class="stat-label">Failed</div>
+      </div>
+    </div>
+
+    <h2 class="section-title">Account Status</h2>
+    <div class="accounts-grid" id="accountsGrid">
+      <div class="empty-state">Loading accounts...</div>
+    </div>
+
+    <h2 class="section-title">Live Activity</h2>
+    <div class="activity-feed" id="activityFeed">
+      <div class="empty-state">No recent activity</div>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-accounts">
+    <div class="page-header">
+      <h1>Accounts</h1>
+      <button class="btn btn-primary" id="addAccountBtn">+ Add Account</button>
+    </div>
+
+    <div class="card form-card hidden" id="accountForm">
+      <h3>Add New Account</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Label</label>
+          <input type="text" id="accLabel" placeholder="Account 1" />
+        </div>
+        <div class="form-group">
+          <label>LinkedIn Email *</label>
+          <input type="email" id="accEmail" placeholder="email@example.com" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Password *</label>
+          <input type="password" id="accPassword" placeholder="password" />
+        </div>
+        <div class="form-group">
+          <label>Resume (PDF/DOC)</label>
+          <input type="file" id="accResume" accept=".pdf,.doc,.docx" />
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" id="cancelAccountBtn">Cancel</button>
+        <button class="btn btn-primary" id="saveAccountBtn">Save Account</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <table class="data-table" id="accountsTable">
+        <thead>
+          <tr>
+            <th>Label</th>
+            <th>Email</th>
+            <th>Resume</th>
+            <th>Status</th>
+            <th>Applied</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="accountsTableBody">
+          <tr><td colspan="6" class="empty-state">No accounts yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-search">
+    <div class="page-header">
+      <h1>Search Jobs</h1>
+    </div>
+
+    <div class="card form-card">
+      <h3>Add Search Config</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Account *</label>
+          <select id="configAccount"><option value="">Select account...</option></select>
+        </div>
+        <div class="form-group">
+          <label>Job Title *</label>
+          <input type="text" id="configTitle" placeholder="Software Engineer" />
+        </div>
+        <div class="form-group">
+          <label>Location</label>
+          <input type="text" id="configLocation" placeholder="New York, NY" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Date Posted</label>
+          <select id="configDate">
+            <option value="past_week">Past Week</option>
+            <option value="past_24h">Past 24 Hours</option>
+            <option value="past_month">Past Month</option>
+            <option value="any_time">Any Time</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Max Applications</label>
+          <input type="number" id="configMax" value="50" min="1" max="500" />
+        </div>
+        <div class="form-group checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="configRemote" /> Remote only
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="configEasyApply" checked /> Easy Apply only
+          </label>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Experience Level</label>
+          <div class="chip-group" id="expChips">
+            <label class="chip"><input type="checkbox" value="entry" /> Entry</label>
+            <label class="chip"><input type="checkbox" value="associate" /> Associate</label>
+            <label class="chip"><input type="checkbox" value="mid" /> Mid-Senior</label>
+            <label class="chip"><input type="checkbox" value="senior" /> Senior</label>
+            <label class="chip"><input type="checkbox" value="director" /> Director</label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Job Type</label>
+          <div class="chip-group" id="typeChips">
+            <label class="chip"><input type="checkbox" value="full_time" checked /> Full Time</label>
+            <label class="chip"><input type="checkbox" value="part_time" /> Part Time</label>
+            <label class="chip"><input type="checkbox" value="contract" /> Contract</label>
+            <label class="chip"><input type="checkbox" value="internship" /> Internship</label>
+          </div>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="saveConfigBtn">Add Search Config</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Configured Searches</h3>
+      <div id="configList" class="config-list">
+        <div class="empty-state">No search configs yet. Add one above.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-qa">
+    <div class="page-header">
+      <h1>Q&A Templates</h1>
+      <p class="page-subtitle">Answers to common application questions. Bot uses these to auto-fill forms.</p>
+    </div>
+
+    <div class="card form-card">
+      <h3>Add Template</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Question Keyword/Pattern *</label>
+          <input type="text" id="qaPattern" placeholder="years of experience" />
+          <small>Bot will match any question containing this text</small>
+        </div>
+        <div class="form-group">
+          <label>Answer *</label>
+          <input type="text" id="qaAnswer" placeholder="3" />
+        </div>
+        <div class="form-group">
+          <label>Field Type</label>
+          <select id="qaType">
+            <option value="text">Text</option>
+            <option value="number">Number</option>
+            <option value="select">Dropdown Select</option>
+            <option value="radio">Radio Button</option>
+            <option value="checkbox">Checkbox</option>
+            <option value="textarea">Textarea</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Account (leave blank for global)</label>
+          <select id="qaAccount"><option value="">Global (all accounts)</option></select>
+        </div>
+        <div class="form-group">
+          <label>Job Role Scope (optional)</label>
+          <input type="text" id="qaRoleScope" placeholder="Software Engineer" />
+          <small>Use this answer only for a matching job role</small>
+        </div>
+        <div class="form-group">
+          <label>Priority (higher = matched first)</label>
+          <input type="number" id="qaPriority" value="5" min="0" max="100" />
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="saveQABtn">Add Template</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Pending Applications</h3>
+      <table class="data-table" id="pendingApplicationsTable">
+        <thead>
+          <tr>
+            <th>Job</th>
+            <th>Role Scope</th>
+            <th>Status</th>
+            <th>Missing</th>
+            <th>Answered</th>
+            <th>Account</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="pendingApplicationsBody">
+          <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Pending Questions</h3>
+      <table class="data-table" id="pendingQuestionsTable">
+        <thead>
+          <tr>
+            <th>Job Role</th>
+            <th>Job</th>
+            <th>Question</th>
+            <th>Type</th>
+            <th>Options</th>
+            <th>Account</th>
+            <th>Answer</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="pendingQuestionsBody">
+          <tr><td colspan="8" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Current Templates</h3>
+      <table class="data-table" id="qaTable">
+        <thead>
+          <tr>
+            <th>Pattern</th>
+            <th>Answer</th>
+            <th>Type</th>
+            <th>Role Scope</th>
+            <th>Account</th>
+            <th>Priority</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="qaTableBody">
+          <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-manual">
+    <div class="page-header">
+      <h1>Manual Review</h1>
+      <p class="page-subtitle">Non-Easy-Apply jobs collected during search. Apply to these manually.</p>
+    </div>
+    <div class="form-group" style="max-width:260px; margin-bottom:1rem;">
+      <label>Filter by Account</label>
+      <select id="manualAccountFilter"><option value="">All Accounts</option></select>
+    </div>
+    <div class="card">
+      <table class="data-table" id="manualTable">
+        <thead>
+          <tr>
+            <th>Job Title</th>
+            <th>Company</th>
+            <th>Location</th>
+            <th>Account</th>
+            <th>Found</th>
+            <th>Link</th>
+          </tr>
+        </thead>
+        <tbody id="manualTableBody">
+          <tr><td colspan="6" class="empty-state">No jobs for manual review</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-logs">
+    <div class="page-header">
+      <h1>Live Logs</h1>
+      <div class="header-actions">
+        <select id="logAccountFilter" style="width:200px">
+          <option value="">All Accounts</option>
+        </select>
+        <button class="btn btn-secondary" id="clearLogsBtn">Clear</button>
+      </div>
+    </div>
+    <div class="log-terminal" id="logTerminal">
+      <div class="log-entry info">Waiting for activity...</div>
+    </div>
+  </section>
+</main>
+
+<div class="toast hidden" id="toast"></div>
+
+<script src="js/api.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
