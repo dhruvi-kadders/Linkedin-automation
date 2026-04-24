@@ -7,16 +7,228 @@ let state = {
   accounts: [],
   stats: [],
   qaTemplates: [],
+  qaProfileTemplateMap: {},
   pendingApplications: [],
   pendingQuestions: [],
   runningIds: new Set(),
 };
+
+const QA_PROFILE_FIELDS = [
+  {
+    key: 'phone_number',
+    label: 'Phone Number',
+    question_pattern: 'phone',
+    match_patterns: ['phone', 'phone number', 'mobile', 'mobile number', 'telephone'],
+    field_type: 'text',
+    input_type: 'text',
+    default_answer: '',
+    placeholder: '+91 98765 43210',
+    priority: 12,
+    required: true,
+    help_text: 'Used for the phone or mobile number question during Easy Apply.',
+  },
+  {
+    key: 'years_of_experience',
+    label: 'Years of Experience',
+    question_pattern: 'years of experience',
+    match_patterns: ['years of experience', 'total experience', 'overall experience'],
+    field_type: 'number',
+    input_type: 'number',
+    default_answer: '3',
+    placeholder: '3',
+    priority: 10,
+    required: true,
+  },
+  {
+    key: 'linkedin_url',
+    label: 'LinkedIn URL',
+    question_pattern: 'linkedin',
+    match_patterns: ['linkedin', 'linkedin url', 'linkedin profile', 'linkedin profile url', 'profile url'],
+    field_type: 'text',
+    input_type: 'text',
+    default_answer: '',
+    placeholder: 'https://www.linkedin.com/in/your-profile',
+    priority: 10,
+    required: true,
+  },
+  {
+    key: 'current_location',
+    label: 'Current Location',
+    question_pattern: 'current location',
+    match_patterns: ['current location', 'current city', 'where are you located', 'currently located'],
+    field_type: 'text',
+    input_type: 'text',
+    default_answer: '',
+    placeholder: 'San Francisco, CA',
+    priority: 10,
+    required: true,
+  },
+  {
+    key: 'legally_authorized',
+    label: 'Legally Authorized to Work',
+    question_pattern: 'legally authorized',
+    field_type: 'select',
+    input_type: 'text',
+    default_answer: 'Yes',
+    placeholder: 'Yes',
+    priority: 10,
+    required: true,
+    options: ['Yes', 'No'],
+  },
+  {
+    key: 'require_sponsorship',
+    label: 'Require Sponsorship',
+    question_pattern: 'require sponsorship',
+    field_type: 'select',
+    input_type: 'text',
+    default_answer: 'No',
+    placeholder: 'No',
+    priority: 10,
+    required: true,
+    options: ['No', 'Yes'],
+  },
+  {
+    key: 'work_remotely',
+    label: 'Open to Remote Work',
+    question_pattern: 'work remotely',
+    field_type: 'select',
+    input_type: 'text',
+    default_answer: 'Yes',
+    placeholder: 'Yes',
+    priority: 5,
+    required: false,
+    options: ['Yes', 'No'],
+  },
+  {
+    key: 'relocate',
+    label: 'Willing to Relocate',
+    question_pattern: 'relocate',
+    field_type: 'select',
+    input_type: 'text',
+    default_answer: 'Yes',
+    placeholder: 'Yes',
+    priority: 5,
+    required: false,
+    options: ['Yes', 'No'],
+  },
+  {
+    key: 'notice_period',
+    label: 'Notice Period',
+    question_pattern: 'notice period',
+    field_type: 'text',
+    input_type: 'text',
+    default_answer: '30 days',
+    placeholder: '30 days',
+    priority: 5,
+    required: false,
+  },
+  {
+    key: 'expected_salary',
+    label: 'Expected Salary',
+    question_pattern: 'expected salary',
+    field_type: 'number',
+    input_type: 'number',
+    default_answer: '80000',
+    placeholder: '80000',
+    priority: 5,
+    required: false,
+  },
+  {
+    key: 'current_salary',
+    label: 'Current Salary',
+    question_pattern: 'current salary',
+    field_type: 'number',
+    input_type: 'number',
+    default_answer: '70000',
+    placeholder: '70000',
+    priority: 5,
+    required: false,
+  },
+  {
+    key: 'gender',
+    label: 'Gender',
+    question_pattern: 'gender',
+    field_type: 'select',
+    input_type: 'text',
+    default_answer: 'Prefer not to say',
+    placeholder: 'Prefer not to say',
+    priority: 3,
+    required: false,
+  },
+  {
+    key: 'veteran',
+    label: 'Veteran Status',
+    question_pattern: 'veteran',
+    field_type: 'select',
+    input_type: 'text',
+    default_answer: 'I am not a veteran',
+    placeholder: 'I am not a veteran',
+    priority: 3,
+    required: false,
+  },
+  {
+    key: 'disability',
+    label: 'Disability Status',
+    question_pattern: 'disability',
+    field_type: 'select',
+    input_type: 'text',
+    default_answer: "I don't wish to answer",
+    placeholder: "I don't wish to answer",
+    priority: 3,
+    required: false,
+  },
+  {
+    key: 'race',
+    label: 'Race / Ethnicity',
+    question_pattern: 'race',
+    field_type: 'select',
+    input_type: 'text',
+    default_answer: 'Prefer not to say',
+    placeholder: 'Prefer not to say',
+    priority: 3,
+    required: false,
+  },
+];
 
 let toastTimer = null;
 let sseConnected = false;
 
 const sseStatus = document.getElementById('sseStatus');
 const sseDot = sseStatus.querySelector('.status-dot');
+const qaProfileStatus = document.getElementById('qaProfileStatus');
+const jobRecordModal = document.getElementById('jobRecordModal');
+const jobRecordTitle = document.getElementById('jobRecordTitle');
+const jobRecordSubtitle = document.getElementById('jobRecordSubtitle');
+const jobRecordNotice = document.getElementById('jobRecordNotice');
+const jobRecordMeta = document.getElementById('jobRecordMeta');
+const jobRecordLinks = document.getElementById('jobRecordLinks');
+const jobRecordQuestions = document.getElementById('jobRecordQuestions');
+const closeJobRecordBtn = document.getElementById('closeJobRecordBtn');
+
+let jobRecordRequestId = 0;
+
+function qaProfileInputId(key) {
+  return `qaProfile-${key}`;
+}
+
+function normalizePattern(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function getFieldPatterns(field) {
+  const patterns = Array.isArray(field.match_patterns) && field.match_patterns.length
+    ? field.match_patterns
+    : [field.question_pattern];
+  return patterns.map((pattern) => normalizePattern(pattern)).filter(Boolean);
+}
+
+function chunkItems(items, size) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
 
 function setSSEStatus(connected) {
   sseConnected = connected;
@@ -56,15 +268,184 @@ function accountLabel(accountId) {
   return acc?.label || acc?.email || accountId || 'Unknown';
 }
 
+function humanizeStatus(value) {
+  return String(value || 'unknown').replace(/_/g, ' ');
+}
+
+function extractLinkedInJobId(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+
+  const pathMatch = text.match(/\/jobs\/view\/(\d+)/i);
+  if (pathMatch?.[1]) return pathMatch[1];
+
+  const queryMatch = text.match(/[?&#](?:currentJobId|jobId)=(\d+)/i);
+  if (queryMatch?.[1]) return queryMatch[1];
+
+  const rawIdMatch = text.match(/^\d+$/);
+  return rawIdMatch?.[0] || '';
+}
+
+function openJobRecordModal() {
+  jobRecordModal.classList.remove('hidden');
+  jobRecordModal.setAttribute('aria-hidden', 'false');
+}
+
+function closeJobRecordModal() {
+  jobRecordModal.classList.add('hidden');
+  jobRecordModal.setAttribute('aria-hidden', 'true');
+}
+
+function setJobRecordLoading() {
+  jobRecordTitle.textContent = 'Loading job record...';
+  jobRecordSubtitle.textContent = 'Fetching the saved application details for this row.';
+  jobRecordNotice.textContent = 'LinkedIn can redirect saved job URLs when a listing changes, expires, or is replaced. This view shows the exact record stored by the bot.';
+  jobRecordMeta.innerHTML = '';
+  jobRecordLinks.innerHTML = '<div class="job-record-empty">Loading saved URLs...</div>';
+  jobRecordQuestions.innerHTML = '<div class="job-record-empty">Loading captured questions...</div>';
+}
+
+function renderJobRecordMeta(context) {
+  const application = context.application || {};
+  const cards = [
+    ['Status', humanizeStatus(application.status)],
+    ['Account', application.account_label || application.account_email || accountLabel(application.account_id)],
+    ['Role Scope', application.search_job_title || application.job_title || '-'],
+    ['Location', application.location || '-'],
+    ['Saved Job ID', extractLinkedInJobId(application.job_url) || 'Unknown'],
+    ['Saved', application.created_at ? new Date(application.created_at).toLocaleString() : '-'],
+  ];
+
+  if (application.error_message) {
+    cards.push(['Last Note', application.error_message]);
+  }
+
+  jobRecordMeta.innerHTML = cards.map(([label, value]) => `
+    <div class="job-record-card">
+      <div class="job-record-card-label">${esc(label)}</div>
+      <div class="job-record-card-value">${esc(value || '-')}</div>
+    </div>
+  `).join('');
+}
+
+function renderJobRecordLinks(context) {
+  const application = context.application || {};
+  const related = Array.isArray(context.relatedApplications) ? context.relatedApplications : [];
+  const allLinks = [{ ...application, _isPrimary: true }, ...related];
+
+  if (!allLinks.length) {
+    jobRecordLinks.innerHTML = '<div class="job-record-empty">No saved URL was found for this application.</div>';
+    return;
+  }
+
+  jobRecordLinks.innerHTML = allLinks.map((item) => {
+    const jobId = extractLinkedInJobId(item.job_url);
+    const label = item._isPrimary ? 'Selected record' : 'Related saved record';
+    return `
+      <div class="job-record-link ${item._isPrimary ? 'is-primary' : ''}">
+        <div>
+          <div class="job-record-link-title">${esc(label)}</div>
+          <div class="job-record-link-meta">
+            ${esc(item.job_title || '-')} at ${esc(item.company_name || '-')}<br>
+            Job ID ${esc(jobId || 'unknown')} · ${esc(humanizeStatus(item.status))} · ${esc(item.created_at ? timeAgo(item.created_at) : '-')}
+          </div>
+        </div>
+        ${item.job_url
+          ? `<a class="btn btn-secondary btn-sm" href="${esc(item.job_url)}" target="_blank" rel="noopener">Open on LinkedIn</a>`
+          : '<span class="job-record-link-meta">No URL saved</span>'}
+      </div>
+    `;
+  }).join('');
+}
+
+function renderJobRecordQuestions(questions) {
+  if (!questions.length) {
+    jobRecordQuestions.innerHTML = '<div class="job-record-empty">No application questions were captured for this record.</div>';
+    return;
+  }
+
+  jobRecordQuestions.innerHTML = questions.map((question) => {
+    const answer = String(question.answer || '').trim();
+    const status = answer ? 'Answered' : (question.is_required ? 'Required' : 'Optional');
+    return `
+      <div class="job-record-question">
+        <div class="job-record-question-head">
+          <div class="job-record-question-text">${esc(question.question_text || '-')}</div>
+          <span class="tag">${esc(status)}</span>
+        </div>
+        <div class="job-record-question-answer">
+          ${answer ? esc(answer) : '<span style="color:var(--text-muted)">No answer saved</span>'}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function viewApplicationRecord(applicationId) {
+  if (!applicationId) {
+    toast('No saved application record is available for this row.', 'error');
+    return;
+  }
+
+  const requestId = ++jobRecordRequestId;
+  openJobRecordModal();
+  setJobRecordLoading();
+
+  try {
+    const [context, questions] = await Promise.all([
+      api.getApplicationContext(applicationId),
+      api.getApplicationQuestions(applicationId, true).catch(() => []),
+    ]);
+
+    if (requestId !== jobRecordRequestId) return;
+
+    const application = context.application || {};
+    jobRecordTitle.textContent = application.job_title || 'Saved Job Record';
+    jobRecordSubtitle.textContent = application.company_name
+      ? `${application.company_name}${application.search_job_title ? ` • ${application.search_job_title}` : ''}`
+      : 'Saved application details';
+
+    jobRecordNotice.textContent = application.error_message
+      ? `${application.error_message} LinkedIn links below are preserved for reference and may still redirect externally.`
+      : 'This is the exact saved record for the row you clicked. External LinkedIn links are preserved below, but LinkedIn may redirect them if the original posting changed.';
+
+    renderJobRecordMeta(context);
+    renderJobRecordLinks(context);
+    renderJobRecordQuestions(Array.isArray(questions) ? questions : []);
+  } catch (err) {
+    if (requestId !== jobRecordRequestId) return;
+    jobRecordTitle.textContent = 'Job record unavailable';
+    jobRecordSubtitle.textContent = 'The saved application details could not be loaded.';
+    jobRecordNotice.textContent = err.message || 'Failed to load this job record.';
+    jobRecordMeta.innerHTML = '';
+    jobRecordLinks.innerHTML = '<div class="job-record-empty">No saved links available.</div>';
+    jobRecordQuestions.innerHTML = '<div class="job-record-empty">No captured questions available.</div>';
+    toast(err.message, 'error');
+  }
+}
+
 function currentTab() {
   return document.querySelector('.nav-item.active')?.dataset.tab || 'dashboard';
 }
 
 async function loadAccounts() {
   state.accounts = await api.getAccounts();
-  state.stats = await api.getAccountStats();
-  const running = await api.getRunning();
+  state.stats = await api.getAccountStats().catch(() => state.stats);
+  const running = await api.getRunning().catch(() => ({ running: [...state.runningIds] }));
   state.runningIds = new Set(running.running || []);
+
+  renderStatsBar();
+  renderAccountGrid();
+  renderAccountsTable();
+  populateAccountDropdowns();
+}
+
+function upsertAccount(account) {
+  if (!account || !account.id) return;
+
+  const idx = state.accounts.findIndex((item) => item.id === account.id);
+  if (idx >= 0) state.accounts[idx] = { ...state.accounts[idx], ...account };
+  else state.accounts.unshift(account);
 
   renderStatsBar();
   renderAccountGrid();
@@ -92,6 +473,110 @@ async function loadQATemplates() {
   renderPendingApplicationsTable();
   renderPendingQuestionsTable();
   renderQATable();
+  await loadQAProfile(document.getElementById('qaProfileAccount')?.value || '');
+}
+
+function renderQAProfileInput(field) {
+  const control = Array.isArray(field.options) && field.options.length
+    ? `
+      <select id="${qaProfileInputId(field.key)}">
+        ${field.options.map((option) => `<option value="${esc(option)}"${option === (field.default_answer || '') ? ' selected' : ''}>${esc(option)}</option>`).join('')}
+      </select>
+    `
+    : `
+      <input
+        type="${esc(field.input_type || 'text')}"
+        id="${qaProfileInputId(field.key)}"
+        placeholder="${esc(field.placeholder || '')}"
+        value="${esc(field.default_answer || '')}"
+      />
+    `;
+
+  return `
+    <div class="qa-profile-field">
+      <label for="${qaProfileInputId(field.key)}">${esc(field.label)}</label>
+      ${control}
+      ${field.help_text ? `<small>${esc(field.help_text)}</small>` : ''}
+    </div>
+  `;
+}
+
+function renderQAProfileForm() {
+  const container = document.getElementById('qaProfileFields');
+  if (!container) return;
+
+  container.innerHTML = chunkItems(QA_PROFILE_FIELDS, 3).map((group) => `
+    <div class="form-row qa-profile-row">
+      ${group.map((field) => renderQAProfileInput(field)).join('')}
+    </div>
+  `).join('');
+}
+
+function setQAProfileStatus(message) {
+  if (qaProfileStatus) qaProfileStatus.textContent = message;
+}
+
+function setQAProfileFieldValue(field, value) {
+  const input = document.getElementById(qaProfileInputId(field.key));
+  if (input) input.value = value ?? '';
+}
+
+function buildQAProfileTemplateMap(templates, accountId) {
+  const map = {};
+
+  QA_PROFILE_FIELDS.forEach((field) => {
+    const matches = (templates || []).filter(
+      (template) =>
+        getFieldPatterns(field).includes(normalizePattern(template.question_pattern))
+        && !template.job_title_scope
+    );
+    const accountTemplate = matches.find((template) => template.account_id === accountId) || null;
+    const fallbackTemplate = accountTemplate || matches.find((template) => !template.account_id) || null;
+
+    map[field.key] = {
+      accountTemplate,
+      fallbackTemplate,
+    };
+  });
+
+  return map;
+}
+
+async function loadQAProfile(accountId) {
+  const selectedAccountId = accountId || '';
+
+  if (!selectedAccountId) {
+    state.qaProfileTemplateMap = {};
+    QA_PROFILE_FIELDS.forEach((field) => {
+      setQAProfileFieldValue(field, field.default_answer || '');
+    });
+    setQAProfileStatus('Select an account to load the saved answers for that user.');
+    return;
+  }
+
+  try {
+    const templates = await api.getQATemplates(selectedAccountId);
+    state.qaProfileTemplateMap = buildQAProfileTemplateMap(templates, selectedAccountId);
+    const savedCount = Object.values(state.qaProfileTemplateMap).filter((entry) => entry.accountTemplate).length;
+
+    QA_PROFILE_FIELDS.forEach((field) => {
+      const entry = state.qaProfileTemplateMap[field.key] || {};
+      const template = entry.fallbackTemplate;
+      const value = template?.answer ?? field.default_answer ?? '';
+
+      setQAProfileFieldValue(field, value);
+    });
+    setQAProfileStatus(savedCount
+      ? `Loaded ${savedCount} saved answer${savedCount === 1 ? '' : 's'} for this account. The rest are using the shared defaults.`
+      : 'This account is using the shared defaults right now. Save once to create account-specific answers.');
+  } catch (err) {
+    state.qaProfileTemplateMap = {};
+    QA_PROFILE_FIELDS.forEach((field) => {
+      setQAProfileFieldValue(field, field.default_answer || '');
+    });
+    setQAProfileStatus('Could not load saved answers, so the built-in defaults are shown.');
+    toast(`Failed to load QA profile: ${err.message}`, 'error');
+  }
 }
 
 async function loadManualReview() {
@@ -120,7 +605,7 @@ async function loadManualReview() {
         <td>${esc(row.location || '-')}</td>
         <td>${esc(row._accountLabel)}</td>
         <td>${timeAgo(row.created_at)}</td>
-        <td><a href="${esc(row.job_url)}" target="_blank" rel="noopener">Open</a></td>
+        <td><button class="btn btn-secondary btn-sm" onclick="viewApplicationRecord('${row.id}')">View Record</button></td>
       </tr>
     `).join('');
   } catch (err) {
@@ -224,7 +709,7 @@ function renderAccountsTable() {
         <td><span class="badge badge-${status}">${status}</span></td>
         <td style="font-family:var(--font-mono)">${statsRow.total_applied || 0}</td>
         <td>
-          <div style="display:flex;gap:6px">
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
             <label class="btn btn-secondary btn-sm" style="cursor:pointer">
               Resume
               <input type="file" accept=".pdf,.doc,.docx" style="display:none" onchange="uploadResume('${acc.id}', this)">
@@ -274,12 +759,34 @@ async function renderConfigList() {
 
 function renderQATable() {
   const tbody = document.getElementById('qaTableBody');
-  if (!state.qaTemplates.length) {
+  const selectedAccountId = document.getElementById('qaProfileAccount')?.value || '';
+  let rows = selectedAccountId
+    ? state.qaTemplates.filter((template) => !template.account_id || template.account_id === selectedAccountId)
+    : state.qaTemplates;
+
+  if (selectedAccountId) {
+    const deduped = new Map();
+    rows.forEach((template) => {
+      const key = [
+        normalizePattern(template.question_pattern),
+        normalizePattern(template.job_title_scope),
+        normalizePattern(template.field_type),
+      ].join('|');
+      const existing = deduped.get(key);
+
+      if (!existing || (!existing.account_id && template.account_id === selectedAccountId)) {
+        deduped.set(key, template);
+      }
+    });
+    rows = [...deduped.values()];
+  }
+
+  if (!rows.length) {
     tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No templates</td></tr>';
     return;
   }
 
-  tbody.innerHTML = state.qaTemplates.map((template) => `
+  tbody.innerHTML = rows.map((template) => `
     <tr>
       <td><code style="font-family:var(--font-mono);color:var(--accent)">${esc(template.question_pattern)}</code></td>
       <td>${esc(template.answer)}</td>
@@ -319,7 +826,7 @@ function renderPendingApplicationsTable() {
         <td>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             <button class="btn btn-primary btn-sm" onclick="continuePendingApplication('${application.id}')" ${canContinue ? '' : 'disabled'}>Continue</button>
-            <a class="btn btn-secondary btn-sm" href="${esc(application.job_url)}" target="_blank" rel="noopener">Open Job</a>
+            <button class="btn btn-secondary btn-sm" onclick="viewApplicationRecord('${application.id}')">View Record</button>
           </div>
         </td>
       </tr>
@@ -346,14 +853,11 @@ function pendingAnswerControl(question) {
 function renderPendingQuestionsTable() {
   const tbody = document.getElementById('pendingQuestionsBody');
   if (!state.pendingQuestions.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No pending questions right now.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No pending questions right now.</td></tr>';
     return;
   }
 
   tbody.innerHTML = state.pendingQuestions.map((question) => {
-    const options = Array.isArray(question.options) ? question.options : [];
-    const optionsText = options.length ? options.map((option) => `<span class="tag">${esc(option)}</span>`).join(' ') : '<span style="color:var(--text-muted)">Free text</span>';
-
     return `
       <tr>
         <td>${esc(question.job_title_scope || question.search_job_title || '-')}</td>
@@ -363,13 +867,12 @@ function renderPendingQuestionsTable() {
         </td>
         <td>${esc(question.question_text)}</td>
         <td><span class="tag">${esc(question.field_type)}</span></td>
-        <td>${optionsText}</td>
-        <td>${esc(accountLabel(question.account_id))}</td>
-        <td>${pendingAnswerControl(question)}</td>
-        <td>
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <td class="pending-question-account-cell">${esc(accountLabel(question.account_id))}</td>
+        <td class="pending-question-answer-cell">${pendingAnswerControl(question)}</td>
+        <td class="pending-question-action-cell">
+          <div class="pending-question-actions">
             <button class="btn btn-primary btn-sm" onclick="answerPendingQuestion('${question.id}')">Save</button>
-            <a class="btn btn-secondary btn-sm" href="${esc(question.job_url)}" target="_blank" rel="noopener">Open Job</a>
+            <button class="btn btn-secondary btn-sm" onclick="viewApplicationRecord('${question.application_id}')">View Record</button>
           </div>
         </td>
       </tr>
@@ -426,21 +929,70 @@ function updateAccountProgress(accountId, payload) {
 }
 
 function populateAccountDropdowns() {
-  const selectors = ['#configAccount', '#qaAccount', '#manualAccountFilter', '#logAccountFilter'];
+  const selectors = ['#configAccount', '#qaAccount', '#qaProfileAccount', '#manualAccountFilter', '#logAccountFilter'];
   selectors.forEach((selector) => {
     const el = document.querySelector(selector);
     if (!el) return;
-    const first = el.options[0];
+    const first = el.options[0] ? el.options[0].cloneNode(true) : null;
+    const previousValue = el.value;
     el.innerHTML = '';
-    el.appendChild(first);
+    if (first) el.appendChild(first);
     state.accounts.forEach((acc) => {
       const option = document.createElement('option');
       option.value = acc.id;
       option.textContent = accountLabel(acc.id);
       el.appendChild(option);
     });
+    if (previousValue && state.accounts.some((acc) => acc.id === previousValue)) {
+      el.value = previousValue;
+    }
   });
 }
+
+renderQAProfileForm();
+
+document.getElementById('qaProfileAccount').addEventListener('change', async (event) => {
+  await loadQAProfile(event.target.value);
+  renderQATable();
+});
+
+document.getElementById('saveQAProfileBtn').addEventListener('click', async () => {
+  const accountId = document.getElementById('qaProfileAccount').value;
+  if (!accountId) return toast('Select an account before saving the QA profile', 'error');
+
+  const missing = QA_PROFILE_FIELDS.filter(
+    (field) => field.required && !document.getElementById(qaProfileInputId(field.key))?.value?.trim()
+  );
+  if (missing.length) {
+    return toast(`Please fill ${missing[0].label} before saving`, 'error');
+  }
+
+  try {
+    const requests = QA_PROFILE_FIELDS.map((field) => {
+      const answer = document.getElementById(qaProfileInputId(field.key)).value.trim();
+      const existing = state.qaProfileTemplateMap[field.key]?.accountTemplate || null;
+      const payload = {
+        account_id: accountId,
+        question_pattern: field.question_pattern,
+        answer,
+        field_type: field.field_type,
+        priority: field.priority,
+        job_title_scope: null,
+      };
+
+      return existing
+        ? api.updateQATemplate(existing.id, payload)
+        : api.createQATemplate(payload);
+    });
+
+    await Promise.all(requests);
+    await loadQATemplates();
+    await loadQAProfile(accountId);
+    toast('QA profile saved for this account', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
 
 document.querySelectorAll('.nav-item').forEach((item) => {
   item.addEventListener('click', async (event) => {
@@ -566,9 +1118,19 @@ document.getElementById('saveAccountBtn').addEventListener('click', async () => 
 
   try {
     const account = await api.createAccount({ label, email, password });
-    if (resumeFile) await api.uploadResume(account.id, resumeFile);
+    upsertAccount(account);
+
+    if (resumeFile) {
+      const resumeData = await api.uploadResume(account.id, resumeFile);
+      upsertAccount({ ...account, resume_path: resumeData.resume_path });
+    }
+
     document.getElementById('accountForm').classList.add('hidden');
-    toast('Account created', 'success');
+    document.getElementById('accLabel').value = '';
+    document.getElementById('accEmail').value = '';
+    document.getElementById('accPassword').value = '';
+    document.getElementById('accResume').value = '';
+    toast('Account created.', 'success');
     await loadAccounts();
   } catch (err) {
     toast(err.message, 'error');
@@ -597,6 +1159,8 @@ window.uploadResume = async (accountId, input) => {
     toast('Resume uploaded', 'success');
   } catch (err) {
     toast(err.message, 'error');
+  } finally {
+    input.value = '';
   }
 };
 
@@ -714,15 +1278,36 @@ window.continuePendingApplication = async (applicationId) => {
       state.runningIds.add(result.accountId);
       renderAccountGrid();
       renderStatsBar();
-      toast('Pending application queued and worker started.', 'success');
+      toast('Selected pending application queued. The worker started and will retry this one first.', 'success');
       return;
     }
 
-    toast('Pending application queued. The running worker will pick it up.', 'info');
+    if (result.workerAlreadyRunning) {
+      toast('Application marked ready. The current worker keeps its existing queue, so this one will retry on the next run.', 'info');
+      return;
+    }
+
+    toast('Application marked ready for retry.', 'info');
   } catch (err) {
     toast(err.message, 'error');
   }
 };
+
+window.viewApplicationRecord = viewApplicationRecord;
+
+closeJobRecordBtn.addEventListener('click', closeJobRecordModal);
+
+jobRecordModal.addEventListener('click', (event) => {
+  if (event.target === jobRecordModal) {
+    closeJobRecordModal();
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !jobRecordModal.classList.contains('hidden')) {
+    closeJobRecordModal();
+  }
+});
 
 document.getElementById('clearLogsBtn').addEventListener('click', () => {
   document.getElementById('logTerminal').innerHTML = '';

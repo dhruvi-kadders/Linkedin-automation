@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
+    "test": "node test/linkedin-job-utils.test.js",
     "db:setup": "psql -U postgres -c \"CREATE DATABASE linkedin_bot;\" && psql -U postgres -d linkedin_bot -f src/db/schema.sql",
     "playwright:install": "npx playwright install chromium"
   },

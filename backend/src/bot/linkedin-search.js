@@ -4,8 +4,10 @@
 
 const { humanDelay, sleep, randomInt } = require('../utils/humanize');
 const { applications } = require('../db');
+const { buildLinkedInJobUrl, compareJobIdentity } = require('./linkedin-job-utils');
 
 const BASE_URL = 'https://www.linkedin.com/jobs/search/';
+const RESULTS_LIST_SEL = '.jobs-search-results-list, .scaffold-layout__list, .jobs-search__results-list';
 
 const buildSearchUrl = (config, start = 0) => {
   const params = new URLSearchParams();
@@ -46,10 +48,28 @@ const waitForPageLoad = async (page, logger) => {
   }
 
   await page.waitForSelector(
-    '.jobs-search-results-list, .scaffold-layout__list, .jobs-search__results-list',
+    RESULTS_LIST_SEL,
     { timeout: 12000 }
   ).catch(() => {});
 
+  return true;
+};
+
+const ensureSearchResultsContext = async (page, searchUrl, logger) => {
+  const hasResultsList = await page.$(RESULTS_LIST_SEL)
+    .then(async (el) => !!el && (await el.isVisible().catch(() => true)))
+    .catch(() => false);
+
+  if (page.url().includes('/jobs/search') && hasResultsList) {
+    return true;
+  }
+
+  logger.info('Returning to search results to continue scanning cards');
+  await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  const ok = await waitForPageLoad(page, logger);
+  if (!ok) return false;
+
+  await scrollToRevealCards(page);
   return true;
 };
 
@@ -180,8 +200,22 @@ const clickJobCard = async (page, jobId, logger) => {
   return true;
 };
 
-const loadJobDetailFromPane = async (page, jobId) => {
-  return page.evaluate((currentJobId) => {
+const loadJobDetailFromPane = async (page) => {
+  return page.evaluate(() => {
+    const extractJobId = (value) => {
+      const text = String(value || '').trim();
+      if (!text) return '';
+
+      const pathMatch = text.match(/\/jobs\/view\/(\d+)/i);
+      if (pathMatch?.[1]) return pathMatch[1];
+
+      const queryMatch = text.match(/[?&#](?:currentJobId|jobId)=(\d+)/i);
+      if (queryMatch?.[1]) return queryMatch[1];
+
+      const rawIdMatch = text.match(/^\d+$/);
+      return rawIdMatch?.[0] || '';
+    };
+
     const text = (selectors) => {
       for (const selector of selectors) {
         const el = document.querySelector(selector);
@@ -213,12 +247,28 @@ const loadJobDetailFromPane = async (page, jobId) => {
       '.jobs-unified-top-card__primary-description-container .tvm__text',
     ]);
 
-    const easyApplyButton =
-      document.querySelector('button.jobs-apply-button[aria-label*="Easy Apply"]') ||
-      document.querySelector('button[aria-label*="Easy Apply"]') ||
-      [...document.querySelectorAll('button.jobs-apply-button, .jobs-apply-button')]
-        .find((btn) => btn.textContent?.toLowerCase().includes('easy apply')) ||
-      null;
+    const detailRoot =
+      document.querySelector('.jobs-search__job-details--container') ||
+      document.querySelector('.scaffold-layout__detail') ||
+      document.querySelector('.jobs-details') ||
+      document.querySelector('.job-view-layout') ||
+      document;
+
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+
+    const easyApplyButton = [...detailRoot.querySelectorAll('button.jobs-apply-button, .jobs-apply-button')]
+      .find((el) => {
+        if (!isVisible(el)) return false;
+
+        const text = `${el.textContent || ''} ${el.getAttribute('aria-label') || ''}`.trim();
+        return /easy apply/i.test(text);
+      }) || null;
 
     const alreadyApplied =
       !!document.querySelector('.artdeco-inline-feedback--success') ||
@@ -226,15 +276,61 @@ const loadJobDetailFromPane = async (page, jobId) => {
       document.body.innerText.includes('Application submitted') ||
       document.body.innerText.includes('Application was sent');
 
+    const idCandidates = [
+      window.location.href,
+      detailRoot.querySelector('button.jobs-save-button')?.getAttribute('data-job-id'),
+      detailRoot.querySelector('button.jobs-save-button')?.dataset?.jobId,
+      detailRoot.querySelector('button.jobs-apply-button')?.getAttribute('data-job-id'),
+      detailRoot.querySelector('button.jobs-apply-button')?.dataset?.jobId,
+      detailRoot.querySelector('[data-job-id]')?.getAttribute('data-job-id'),
+      detailRoot.querySelector('[data-occludable-job-id]')?.getAttribute('data-occludable-job-id'),
+      detailRoot.querySelector('a[href*="/jobs/view/"]')?.href,
+      document.querySelector('[aria-current="true"] a[href*="/jobs/view/"]')?.href,
+    ];
+
+    const jobId = idCandidates.map(extractJobId).find(Boolean) || '';
+
     return {
+      jobId,
       title,
       company,
       location,
-      url: `https://www.linkedin.com/jobs/view/${currentJobId}/`,
-      isEasyApply: !!easyApplyButton && !easyApplyButton.disabled,
+      url: jobId ? `https://www.linkedin.com/jobs/view/${jobId}/` : window.location.href,
+      isEasyApply: !!easyApplyButton && !easyApplyButton.disabled && easyApplyButton.getAttribute('aria-disabled') !== 'true',
       alreadyApplied,
     };
-  }, jobId);
+  });
+};
+
+const loadConfirmedJobDetailFromPane = async (page, job, logger) => {
+  const expected = {
+    jobId: job.jobId,
+    url: buildLinkedInJobUrl(job.jobId),
+    title: job.title,
+    company: job.company,
+  };
+
+  let detail = null;
+  let comparison = compareJobIdentity(expected, {});
+
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    detail = await loadJobDetailFromPane(page);
+    comparison = compareJobIdentity(expected, detail);
+
+    if (comparison.matches) {
+      return detail;
+    }
+
+    if (attempt < 5) {
+      await page.waitForLoadState('networkidle', { timeout: 4000 }).catch(() => {});
+      await sleep(randomInt(600, 1100));
+    }
+  }
+
+  logger.warn(
+    `Detail pane mismatch for card ${job.jobId}: expected "${job.title}" @ "${job.company}", found "${detail?.title || 'Unknown title'}" @ "${detail?.company || 'Unknown company'}"`
+  );
+  return null;
 };
 
 const hasNextPage = async (page) => {
@@ -287,6 +383,7 @@ const searchJobs = async (page, config, accountId, logger, onEasyApplyJob = null
   await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
   const ok = await waitForPageLoad(page, logger);
   if (!ok) return [];
+  let activeSearchUrl = page.url();
 
   const easyApplyJobs = [];
   const seenJobIds = new Set();
@@ -296,6 +393,10 @@ const searchJobs = async (page, config, accountId, logger, onEasyApplyJob = null
   const maxJobs = config.max_applications || 50;
 
   while (totalSeen < maxJobs) {
+    const onResultsPage = await ensureSearchResultsContext(page, activeSearchUrl, logger);
+    if (!onResultsPage) break;
+    activeSearchUrl = page.url();
+
     logger.info(`Page ${pageNum} - scrolling to load cards...`);
     await scrollToRevealCards(page);
 
@@ -319,7 +420,13 @@ const searchJobs = async (page, config, accountId, logger, onEasyApplyJob = null
       if (totalSeen >= maxJobs) break;
       seenJobIds.add(job.jobId);
 
-      const jobUrl = `https://www.linkedin.com/jobs/view/${job.jobId}/`;
+      const onSearchPage = await ensureSearchResultsContext(page, activeSearchUrl, logger);
+      if (!onSearchPage) {
+        logger.warn('Could not restore the current search results page - stopping this search config');
+        return easyApplyJobs;
+      }
+
+      const jobUrl = buildLinkedInJobUrl(job.jobId);
       const existing = await applications.findByUrl(accountId, jobUrl);
       const existingRow = existing.rows[0];
 
@@ -336,8 +443,13 @@ const searchJobs = async (page, config, accountId, logger, onEasyApplyJob = null
       const clicked = await clickJobCard(page, job.jobId, logger);
       if (!clicked) continue;
 
-      const detail = await loadJobDetailFromPane(page, job.jobId);
+      const detail = await loadConfirmedJobDetailFromPane(page, job, logger);
       totalSeen++;
+
+      if (!detail) {
+        logger.warn(`Skipping card ${job.jobId} because the detail pane did not settle on the selected job`);
+        continue;
+      }
 
       logger.info(`"${detail.title}" @ "${detail.company}" | EasyApply=${detail.isEasyApply} | Applied=${detail.alreadyApplied}`);
 
@@ -381,10 +493,13 @@ const searchJobs = async (page, config, accountId, logger, onEasyApplyJob = null
           const result = await onEasyApplyJob(easyApplyJob);
           logger.info(`Immediate apply result for "${detail.title}": ${result}`);
 
-          await page.waitForSelector(
-            '.jobs-search-results-list, .scaffold-layout__list, .jobs-search__results-list',
-            { timeout: 5000 }
-          ).catch(() => {});
+          const restored = await ensureSearchResultsContext(page, activeSearchUrl, logger);
+          if (!restored) {
+            logger.warn('Could not restore search results after the apply attempt - stopping this search config');
+            return easyApplyJobs;
+          }
+
+          await page.waitForSelector(RESULTS_LIST_SEL, { timeout: 5000 }).catch(() => {});
         }
       } else {
         await applications.create({
@@ -418,6 +533,7 @@ const searchJobs = async (page, config, accountId, logger, onEasyApplyJob = null
     }
 
     pageNum++;
+    activeSearchUrl = page.url();
     await humanDelay('normal');
   }
 

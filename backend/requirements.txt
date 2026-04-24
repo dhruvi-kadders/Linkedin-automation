@@ -1,0 +1,9 @@
+fastapi==0.118.0
+uvicorn[standard]==0.37.0
+python-dotenv==1.1.0
+python-multipart==0.0.20
+psycopg2-binary==2.9.10
+playwright==1.55.0
+numpy
+scikit-learn
+pypdf==5.4.0

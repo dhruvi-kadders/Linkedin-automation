@@ -50,8 +50,58 @@ const initPromise = (async () => {
   `);
 
   await pool.query(`
+    DELETE FROM application_questions aq
+    USING (
+      SELECT id
+      FROM (
+        SELECT
+          id,
+          ROW_NUMBER() OVER (
+            PARTITION BY application_id, question_text
+            ORDER BY
+              CASE WHEN COALESCE(BTRIM(answer), '') != '' THEN 1 ELSE 0 END DESC,
+              is_answered DESC,
+              updated_at DESC,
+              created_at DESC,
+              step_index DESC,
+              id DESC
+          ) AS rn
+        FROM application_questions
+      ) ranked
+      WHERE rn > 1
+    ) dupes
+    WHERE aq.id = dupes.id
+  `);
+
+  await pool.query(`
+    UPDATE application_questions
+    SET answer = NULL,
+        is_answered = FALSE,
+        updated_at = NOW()
+    WHERE COALESCE(is_required, FALSE) = TRUE
+      AND COALESCE(is_answered, FALSE) = TRUE
+      AND LOWER(COALESCE(field_type, '')) IN ('select', 'combobox')
+      AND (
+        REGEXP_REPLACE(LOWER(BTRIM(COALESCE(answer, ''))), '\\s+', ' ', 'g') IN (
+          'select',
+          'select an option',
+          'select one',
+          'please select',
+          'please make a selection',
+          'make a selection',
+          'choose an option',
+          'choose one'
+        )
+        OR REGEXP_REPLACE(LOWER(BTRIM(COALESCE(answer, ''))), '\\s+', ' ', 'g')
+          = REGEXP_REPLACE(LOWER(BTRIM(question_text)), '\\s+', ' ', 'g')
+      )
+  `);
+
+  await pool.query(`DROP INDEX IF EXISTS idx_application_questions_unique`);
+
+  await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_application_questions_unique
-    ON application_questions(application_id, question_text, step_index)
+    ON application_questions(application_id, question_text)
   `);
 
   await pool.query(`
@@ -196,6 +246,55 @@ const searchConfigs = {
 const applications = {
   getById: (id) => query(`SELECT * FROM job_applications WHERE id = $1`, [id]),
 
+  getContext: async (applicationId) => {
+    const applicationRes = await query(
+      `SELECT
+         ja.*,
+         a.label AS account_label,
+         a.email AS account_email,
+         sc.job_title AS search_job_title
+       FROM job_applications ja
+       LEFT JOIN accounts a ON a.id = ja.account_id
+       LEFT JOIN search_configs sc ON sc.id = ja.search_config_id
+       WHERE ja.id = $1`,
+      [applicationId]
+    );
+
+    const application = applicationRes.rows[0] || null;
+    if (!application) {
+      return { application: null, relatedApplications: [] };
+    }
+
+    const relatedRes = await query(
+      `SELECT
+         id,
+         account_id,
+         search_config_id,
+         job_url,
+         job_title,
+         company_name,
+         location,
+         is_easy_apply,
+         status,
+         error_message,
+         applied_at,
+         created_at
+       FROM job_applications
+       WHERE account_id = $1
+         AND id != $2
+         AND LOWER(COALESCE(job_title, '')) = LOWER(COALESCE($3, ''))
+         AND LOWER(COALESCE(company_name, '')) = LOWER(COALESCE($4, ''))
+       ORDER BY created_at DESC
+       LIMIT 10`,
+      [application.account_id, application.id, application.job_title || '', application.company_name || '']
+    );
+
+    return {
+      application,
+      relatedApplications: relatedRes.rows,
+    };
+  },
+
   findByUrl: (accountId, jobUrl) =>
     query(
       `SELECT *
@@ -294,10 +393,10 @@ const applications = {
          sc.job_title AS search_job_title,
          COUNT(aq.id) FILTER (
            WHERE aq.is_required = TRUE
-             AND COALESCE(BTRIM(aq.answer), '') = ''
+             AND COALESCE(aq.is_answered, FALSE) = FALSE
          ) AS missing_required_count,
          COUNT(aq.id) FILTER (
-           WHERE COALESCE(BTRIM(aq.answer), '') != ''
+           WHERE COALESCE(aq.is_answered, FALSE) = TRUE
          ) AS answered_count
        FROM job_applications ja
        LEFT JOIN application_questions aq ON aq.application_id = ja.id
@@ -321,7 +420,7 @@ const applications = {
     return res.rows.length > 0;
   },
 
-  getRetryQueue: (accountId, searchConfigId = null) =>
+  getRetryQueue: (accountId, searchConfigId = null, prioritizedApplicationId = null) =>
     query(
       `SELECT
          ja.*,
@@ -341,10 +440,15 @@ const applications = {
            FROM application_questions aq
            WHERE aq.application_id = ja.id
              AND aq.is_required = TRUE
-             AND COALESCE(BTRIM(aq.answer), '') = ''
+             AND COALESCE(aq.is_answered, FALSE) = FALSE
          )
-       ORDER BY ja.created_at ASC`,
-      [accountId, searchConfigId]
+       ORDER BY
+         CASE
+           WHEN $3::uuid IS NOT NULL AND ja.id = $3 THEN 0
+           ELSE 1
+         END,
+         ja.created_at ASC`,
+      [accountId, searchConfigId, prioritizedApplicationId]
     ),
 
   markReadyToRetryIfComplete: async (applicationId) => {
@@ -353,7 +457,7 @@ const applications = {
        FROM application_questions
        WHERE application_id = $1
          AND is_required = TRUE
-         AND COALESCE(BTRIM(answer), '') = ''`,
+         AND COALESCE(is_answered, FALSE) = FALSE`,
       [applicationId]
     );
 
@@ -366,6 +470,7 @@ const applications = {
     );
     return status;
   },
+
 };
 
 const qaTemplates = {
@@ -475,15 +580,22 @@ const applicationQuestions = {
             options, answer, is_required, is_answered, step_index,
             job_title_scope, job_title, company_name, updated_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
-         ON CONFLICT (application_id, question_text, step_index)
+         ON CONFLICT (application_id, question_text)
          DO UPDATE SET
            account_id = EXCLUDED.account_id,
            search_config_id = EXCLUDED.search_config_id,
            field_type = EXCLUDED.field_type,
            options = EXCLUDED.options,
-           answer = EXCLUDED.answer,
+           answer = CASE
+             WHEN COALESCE(BTRIM(EXCLUDED.answer), '') != '' THEN EXCLUDED.answer
+             ELSE application_questions.answer
+           END,
            is_required = EXCLUDED.is_required,
-           is_answered = EXCLUDED.is_answered,
+           is_answered = CASE
+             WHEN EXCLUDED.is_answered = TRUE THEN TRUE
+             ELSE application_questions.is_answered
+           END,
+           step_index = GREATEST(application_questions.step_index, EXCLUDED.step_index),
            job_title_scope = EXCLUDED.job_title_scope,
            job_title = EXCLUDED.job_title,
            company_name = EXCLUDED.company_name,
@@ -531,7 +643,7 @@ const applicationQuestions = {
       `SELECT *
        FROM application_questions
        WHERE application_id = $1
-         AND ($2::boolean = TRUE OR COALESCE(BTRIM(answer), '') = '')
+         AND ($2::boolean = TRUE OR COALESCE(is_answered, FALSE) = FALSE)
        ORDER BY step_index ASC, updated_at ASC, created_at ASC`,
       [applicationId, includeAnswered]
     ),
@@ -547,7 +659,7 @@ const applicationQuestions = {
        JOIN job_applications ja ON ja.id = aq.application_id
        LEFT JOIN search_configs sc ON sc.id = aq.search_config_id
        WHERE aq.is_required = TRUE
-         AND COALESCE(BTRIM(aq.answer), '') = ''
+         AND COALESCE(aq.is_answered, FALSE) = FALSE
          AND ($1::uuid IS NULL OR aq.account_id = $1)
        ORDER BY aq.updated_at DESC, aq.step_index DESC, aq.created_at DESC`,
       [accountId]
@@ -572,7 +684,7 @@ const applicationQuestions = {
          AND LOWER(question_text) = LOWER($2)
          AND COALESCE(LOWER(job_title_scope), '') = COALESCE(LOWER($3), '')
          AND is_required = TRUE
-         AND COALESCE(BTRIM(answer), '') = ''`,
+         AND COALESCE(is_answered, FALSE) = FALSE`,
       [account_id, question_text, job_title_scope]
     );
 

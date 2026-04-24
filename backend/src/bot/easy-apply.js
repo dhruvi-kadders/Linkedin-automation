@@ -4,6 +4,7 @@
 const path = require('path');
 const { humanType, humanScroll, sleep, randomInt } = require('../utils/humanize');
 const { applications, applicationQuestions } = require('../db');
+const { compareJobIdentity } = require('./linkedin-job-utils');
 
 const MODAL_SEL = [
   '.jobs-easy-apply-modal',
@@ -12,12 +13,11 @@ const MODAL_SEL = [
   '.jobs-easy-apply-content',
 ].join(', ');
 
+const APPLICATION_ENTRY_TEXT_RE = /easy apply/i;
+
 const EASY_APPLY_BTN_SEL = [
   'button.jobs-apply-button[aria-label*="Easy Apply"]',
   'button[aria-label*="Easy Apply"]',
-  '.jobs-s-apply button.artdeco-button--primary',
-  '.jobs-apply-button--top-card',
-  '.jobs-apply-button',
 ].join(', ');
 
 const normalize = (value) => String(value || '').trim().toLowerCase();
@@ -49,9 +49,127 @@ const getBlockingQuestions = (questions) => {
   return questions;
 };
 
+const collapseWhitespace = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+
+const PLACEHOLDER_SELECTION_VALUES = new Set([
+  'select',
+  'select an option',
+  'select one',
+  'please select',
+  'please make a selection',
+  'make a selection',
+  'choose an option',
+  'choose one',
+]);
+
+const normalizeFieldValue = (value) =>
+  collapseWhitespace(value)
+    .toLowerCase()
+    .replace(/^[\s\-:]+|[\s\-:]+$/g, '');
+
+const isPlaceholderSelectionValue = (fieldType, questionText, value) => {
+  if (!['select', 'combobox'].includes(normalize(fieldType))) return false;
+
+  const normalizedValue = normalizeFieldValue(value);
+  if (!normalizedValue) return false;
+
+  const normalizedQuestion = normalizeFieldValue(questionText);
+  return PLACEHOLDER_SELECTION_VALUES.has(normalizedValue) || (!!normalizedQuestion && normalizedValue === normalizedQuestion);
+};
+
+const sanitizeCapturedQuestion = (question) => {
+  const sanitized = { ...(question || {}) };
+  const currentValue = collapseWhitespace(sanitized.currentValue);
+  sanitized.currentValue = currentValue;
+
+  if (isPlaceholderSelectionValue(sanitized.field_type, sanitized.question_text, currentValue)) {
+    sanitized.currentValue = '';
+    sanitized.is_answered = false;
+  }
+
+  return sanitized;
+};
+
+const truncateForLog = (value, max = 120) => {
+  const text = collapseWhitespace(value);
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 3)}...`;
+};
+
+const looksLikeRepeatedLeadingText = (value) => {
+  const text = collapseWhitespace(value);
+  if (text.length < 8) return false;
+
+  const maxLen = Math.floor(text.length / 2);
+  for (let len = maxLen; len >= 4; len--) {
+    const first = text.slice(0, len).trim();
+    const second = text.slice(len, len * 2).trim();
+    if (first && first.length >= 4 && first === second) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const buildLabelDebugMessage = (field, stepIndex, fieldIndex) => {
+  const debug = field.label_debug || {};
+  return [
+    `Label debug [step ${stepIndex} field ${fieldIndex + 1}]`,
+    `type=${field.field_type || 'unknown'}`,
+    `chosen="${truncateForLog(field.question_text)}"`,
+    `explicit="${truncateForLog(debug.explicitLabel)}"`,
+    `container="${truncateForLog(debug.containerLabel)}"`,
+    `groupHeading="${truncateForLog(debug.groupHeading)}"`,
+    `groupLabel="${truncateForLog(debug.groupLabel)}"`,
+    `aria="${truncateForLog(debug.ariaLabel)}"`,
+    `placeholder="${truncateForLog(debug.placeholder)}"`,
+    `name="${truncateForLog(debug.name)}"`,
+  ].join(' | ');
+};
+
+const buildLabelDebugHtmlMessage = (field, stepIndex, fieldIndex) => {
+  const debug = field.label_debug || {};
+  return [
+    `Label debug HTML [step ${stepIndex} field ${fieldIndex + 1}]`,
+    `chosen="${truncateForLog(field.question_text)}"`,
+    `explicitHtml="${truncateForLog(debug.explicitHtml, 280)}"`,
+    `explicitInnerHtml="${truncateForLog(debug.explicitInnerHtml, 280)}"`,
+  ].join(' | ');
+};
+
+const logFieldLabelDebug = (fields, stepIndex, logger) => {
+  if (!logger || !fields?.length) return;
+
+  fields.forEach((field, index) => {
+    const debugValues = Object.values(field.label_debug || {});
+    const suspicious =
+      looksLikeRepeatedLeadingText(field.question_text) ||
+      debugValues.some((value) => looksLikeRepeatedLeadingText(value));
+
+    const message = buildLabelDebugMessage(field, stepIndex, index);
+    if (suspicious) {
+      logger.info(message);
+      if (field.label_debug?.explicitHtml) {
+        logger.info(buildLabelDebugHtmlMessage(field, stepIndex, index));
+      }
+      return;
+    }
+
+    logger.debug(message);
+  });
+};
+
+const isApplyFlowUrl = (value) => {
+  const text = String(value || '');
+  return /\/jobs\/view\/\d+\/apply\/?/i.test(text) || /openSDUIApplyFlow=true/i.test(text);
+};
+
+const isApplicationEntryLabel = (value) => APPLICATION_ENTRY_TEXT_RE.test(collapseWhitespace(value));
+
 const findVisibleEasyApplyButton = async (page) => {
   try {
-    const roleButtons = page.getByRole('button', { name: /easy apply/i });
+    const roleButtons = page.getByRole('button', { name: APPLICATION_ENTRY_TEXT_RE });
     const count = await roleButtons.count().catch(() => 0);
     for (let i = 0; i < count; i++) {
       const btn = roleButtons.nth(i);
@@ -63,10 +181,23 @@ const findVisibleEasyApplyButton = async (page) => {
 
   const cssButtons = await page.$$(EASY_APPLY_BTN_SEL).catch(() => []);
   for (const btn of cssButtons) {
-    if (await btn.isVisible().catch(() => false)) return btn;
+    if (!(await btn.isVisible().catch(() => false))) continue;
+    const label = `${(await btn.textContent().catch(() => '')) || ''} ${(await btn.getAttribute('aria-label').catch(() => '')) || ''}`;
+    if (isApplicationEntryLabel(label)) return btn;
   }
 
   return null;
+};
+
+const waitForApplicationSurface = async (page) => {
+  const opened = await page.waitForSelector(MODAL_SEL, { timeout: 8000 }).then(() => true).catch(() => false);
+  if (!opened) return false;
+
+  await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+  await sleep(randomInt(800, 1400));
+
+  return true;
 };
 
 const openEasyApplyModal = async (page, logger) => {
@@ -91,25 +222,27 @@ const openEasyApplyModal = async (page, logger) => {
 
   await btn.click({ timeout: 5000 }).catch(async () => {
     await page.evaluate(() => {
-      const buttons = [...document.querySelectorAll('button')];
-      const easyApply = buttons.find((el) => {
+      const controls = [...document.querySelectorAll('button')];
+      const easyApply = controls.find((el) => {
         const text = (el.textContent || '').trim();
         const aria = (el.getAttribute('aria-label') || '').trim();
-        return /easy apply/i.test(text) || /easy apply/i.test(aria);
+        return (
+          /easy apply/i.test(text) ||
+          /easy apply/i.test(aria)
+        );
       });
       if (easyApply) easyApply.click();
     });
   });
 
-  try {
-    await page.waitForSelector(MODAL_SEL, { timeout: 8000 });
-    await sleep(randomInt(800, 1400));
+  const surface = await waitForApplicationSurface(page);
+  if (surface) {
     logger.info('Easy Apply modal opened');
     return true;
-  } catch {
-    logger.warn('Modal did not appear after clicking Easy Apply');
-    return false;
   }
+
+  logger.warn('Easy Apply modal did not open');
+  return false;
 };
 
 const hasInlineEasyApplyContext = async (page) => {
@@ -117,24 +250,264 @@ const hasInlineEasyApplyContext = async (page) => {
   return !!btn;
 };
 
+const readCurrentJobContext = async (page) => {
+  return page.evaluate(() => {
+    const extractJobId = (value) => {
+      const text = String(value || '').trim();
+      if (!text) return '';
+
+      const pathMatch = text.match(/\/jobs\/view\/(\d+)/i);
+      if (pathMatch?.[1]) return pathMatch[1];
+
+      const queryMatch = text.match(/[?&#](?:currentJobId|jobId)=(\d+)/i);
+      if (queryMatch?.[1]) return queryMatch[1];
+
+      const rawIdMatch = text.match(/^\d+$/);
+      return rawIdMatch?.[0] || '';
+    };
+
+    const readText = (root, selectors) => {
+      for (const selector of selectors) {
+        const value = root.querySelector(selector)?.textContent?.trim();
+        if (value) return value;
+      }
+      return '';
+    };
+
+    const detailRoot =
+      document.querySelector('.jobs-search__job-details--container') ||
+      document.querySelector('.scaffold-layout__detail') ||
+      document.querySelector('.jobs-details') ||
+      document.querySelector('.job-view-layout') ||
+      document;
+
+    const titleSelectors = [
+      'h1.job-details-jobs-unified-top-card__job-title',
+      '.jobs-unified-top-card__job-title h1',
+      'h1.t-24',
+      '.job-view-layout h1',
+      'h1',
+    ];
+
+    const companySelectors = [
+      '.job-details-jobs-unified-top-card__company-name a',
+      '.job-details-jobs-unified-top-card__company-name',
+      '.jobs-unified-top-card__company-name a',
+      '.jobs-unified-top-card__company-name',
+    ];
+
+    const locationSelectors = [
+      '.job-details-jobs-unified-top-card__primary-description-container .tvm__text',
+      '.job-details-jobs-unified-top-card__bullet',
+      '.jobs-unified-top-card__bullet',
+      '.jobs-unified-top-card__primary-description-container .tvm__text',
+    ];
+
+    const title = readText(detailRoot, titleSelectors) || readText(document, titleSelectors);
+    const company = readText(detailRoot, companySelectors) || readText(document, companySelectors);
+    const location = readText(detailRoot, locationSelectors) || readText(document, locationSelectors);
+
+    const idCandidates = [
+      window.location.href,
+      detailRoot.querySelector('button.jobs-save-button')?.getAttribute('data-job-id'),
+      detailRoot.querySelector('button.jobs-save-button')?.dataset?.jobId,
+      detailRoot.querySelector('button.jobs-apply-button')?.getAttribute('data-job-id'),
+      detailRoot.querySelector('button.jobs-apply-button')?.dataset?.jobId,
+      detailRoot.querySelector('[data-job-id]')?.getAttribute('data-job-id'),
+      detailRoot.querySelector('[data-occludable-job-id]')?.getAttribute('data-occludable-job-id'),
+      detailRoot.querySelector('a[href*="/jobs/view/"]')?.href,
+      document.querySelector('[aria-current="true"] a[href*="/jobs/view/"]')?.href,
+    ];
+
+    const jobId = idCandidates.map(extractJobId).find(Boolean) || '';
+    return {
+      jobId,
+      url: jobId ? `https://www.linkedin.com/jobs/view/${jobId}/` : window.location.href,
+      title,
+      company,
+      location,
+    };
+  });
+};
+
+const formatJobLabel = (job) => {
+  const title = String(job?.title || '').trim() || 'Unknown title';
+  const company = String(job?.company || '').trim() || 'Unknown company';
+  return `"${title}" @ "${company}"`;
+};
+
+const buildJobMismatchMessage = (expected, actual) => {
+  const seenLabel =
+    actual?.title || actual?.company
+      ? ` Saw ${formatJobLabel(actual)}.`
+      : '';
+
+  const actualUrl =
+    actual?.url && actual.url !== expected?.url
+      ? ` Opened URL: ${actual.url}`
+      : '';
+
+  return `LinkedIn opened a different job than expected for ${formatJobLabel(expected)}.${seenLabel}${actualUrl}`.trim();
+};
+
+const confirmExpectedJobContext = async (page, job) => {
+  const expected = {
+    jobId: job.jobId,
+    url: job.url,
+    title: job.title,
+    company: job.company,
+  };
+
+  let actual = {};
+  let comparison = compareJobIdentity(expected, actual);
+
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    actual = await readCurrentJobContext(page).catch(() => ({}));
+    comparison = compareJobIdentity(expected, actual);
+
+    if (comparison.matches) {
+      return { ok: true, actual, comparison };
+    }
+
+    if (attempt < 4) {
+      await page.waitForLoadState('networkidle', { timeout: 4000 }).catch(() => {});
+      await sleep(randomInt(700, 1200));
+    }
+  }
+
+  return { ok: false, actual, comparison };
+};
+
 const extractFields = async (page) => {
   return page.evaluate((modalSel) => {
-    const modal = document.querySelector(modalSel);
-    if (!modal) return [];
+    const isApplyPage =
+      /\/jobs\/view\/\d+\/apply\/?/i.test(window.location.href) ||
+      /openSDUIApplyFlow=true/i.test(window.location.href);
 
     const cssEscape = (value) => {
       if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(value);
       return String(value).replace(/["\\]/g, '\\$&');
     };
 
-    const readText = (node) => node?.textContent?.replace(/\s+/g, ' ')?.trim() || '';
+    const collapseRepeatedText = (value) => {
+      const text = String(value || '').replace(/\s+/g, ' ').trim();
+      if (!text) return '';
+
+      const half = text.length / 2;
+      if (Number.isInteger(half)) {
+        const left = text.slice(0, half).trim();
+        const right = text.slice(half).trim();
+        if (left && left === right) return left;
+      }
+
+      return text;
+    };
+
+    const readText = (node) => {
+      if (!node) return '';
+
+      const clone = node.cloneNode(true);
+      clone
+        .querySelectorAll('.visually-hidden, .artdeco-visually-hidden, .screen-reader-text, .sr-only')
+        .forEach((el) => el.remove());
+
+      return collapseRepeatedText(clone.textContent || node.textContent || '');
+    };
+
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+
+    const isCandidateField = (el) =>
+      !!el &&
+      el.type !== 'hidden' &&
+      !el.disabled &&
+      isVisible(el) &&
+      !el.closest('header, nav, [role="search"], .search-global-typeahead, .jobs-search-box');
+
+    const findFirstVisible = (selector, root = document) =>
+      [...root.querySelectorAll(selector)].find(isVisible) || null;
+
+    const countCandidateInputs = (root) => {
+      if (!root) return 0;
+
+      return [...root.querySelectorAll('input, select, textarea')]
+        .filter(isCandidateField)
+        .length;
+    };
+
+    const detailRoot =
+      findFirstVisible('.jobs-search__job-details--container') ||
+      findFirstVisible('.scaffold-layout__detail') ||
+      findFirstVisible('.jobs-details') ||
+      findFirstVisible('.job-view-layout') ||
+      null;
+
+    const actionSelectors = [
+      'button[aria-label*="Submit application"]',
+      'footer button[aria-label*="Submit"]',
+      'button[aria-label*="Review your application"]',
+      'button[aria-label*="Continue to next step"]',
+      'button[aria-label*="Next"]',
+      '.jobs-easy-apply-modal footer .artdeco-button--primary',
+      '.artdeco-modal__actionbar .artdeco-button--primary',
+    ];
+
+    const actionButton = actionSelectors
+      .map((selector) => findFirstVisible(selector))
+      .find((button) => {
+        return !!button && !button.disabled && button.getAttribute('aria-disabled') !== 'true';
+      }) || null;
+
+    const actionRoot = actionButton?.closest(
+      [
+        '[data-live-test-job-apply-page]',
+        'form[action*="/apply"]',
+        '.jobs-easy-apply-modal',
+        '.jobs-easy-apply-content',
+        '.artdeco-modal[role="dialog"]',
+        '.artdeco-modal',
+        '.jobs-search__job-details--container',
+        '.scaffold-layout__detail',
+        '.jobs-details',
+        '.job-view-layout',
+        '.scaffold-layout__main',
+        'main',
+      ].join(', ')
+    ) || null;
+
+    const preferredRoots = [
+      actionRoot,
+      findFirstVisible(modalSel),
+      findFirstVisible('[data-live-test-job-apply-page]'),
+      findFirstVisible('form[action*="/apply"]'),
+      detailRoot,
+      isApplyPage ? document.body : null,
+    ].filter(Boolean);
+
+    const modal =
+      preferredRoots.find((root) => countCandidateInputs(root) > 0) ||
+      preferredRoots[0] ||
+      null;
+
+    if (!modal) return [];
 
     const getQuestionContainer = (el) =>
       el.closest('fieldset, .fb-dash-form-element, .jobs-easy-apply-form-section__grouping, .artdeco-form-item');
 
-    const getGroupLabel = (el) => {
+    const getGroupLabelDetails = (el) => {
       const container = getQuestionContainer(el);
-      if (!container) return '';
+      const result = {
+        chosen: '',
+        heading: '',
+        label: '',
+      };
+
+      if (!container) return result;
 
       const headings = [
         ...container.querySelectorAll(
@@ -144,7 +517,11 @@ const extractFields = async (page) => {
 
       for (const heading of headings) {
         const text = readText(heading);
-        if (text) return text;
+        if (text) {
+          result.heading = text;
+          result.chosen = text;
+          return result;
+        }
       }
 
       const labels = [...container.querySelectorAll('label')];
@@ -153,36 +530,70 @@ const extractFields = async (page) => {
         if (!text) continue;
 
         const forId = labelEl.getAttribute('for');
-        if (!forId) return text;
+        result.label = text;
+        if (!forId) {
+          result.chosen = text;
+          return result;
+        }
 
         const target = container.querySelector(`#${cssEscape(forId)}`);
         if (target && (target.type === 'radio' || target.type === 'checkbox')) continue;
-        return text;
+        result.chosen = text;
+        return result;
       }
 
-      return '';
+      return result;
     };
 
-    const getLabel = (el) => {
+    const getLabelDetails = (el) => {
+      const details = {
+        chosen: '',
+        explicitLabel: '',
+        explicitHtml: '',
+        explicitInnerHtml: '',
+        containerLabel: '',
+        groupHeading: '',
+        groupLabel: '',
+        ariaLabel: el.getAttribute('aria-label')?.trim() || '',
+        placeholder: el.getAttribute('placeholder')?.trim() || '',
+        name: el.name || '',
+      };
+
       if (el.type === 'radio') {
-        const groupLabel = getGroupLabel(el);
-        if (groupLabel) return groupLabel;
+        const groupDetails = getGroupLabelDetails(el);
+        details.groupHeading = groupDetails.heading;
+        details.groupLabel = groupDetails.label;
+        if (groupDetails.chosen) {
+          details.chosen = groupDetails.chosen;
+          return details;
+        }
       }
 
       if (el.id) {
         const lbl = modal.querySelector(`label[for="${cssEscape(el.id)}"]`);
         const text = readText(lbl);
-        if (text) return text;
+        if (text) {
+          details.explicitLabel = text;
+          details.explicitHtml = lbl?.outerHTML || '';
+          details.explicitInnerHtml = lbl?.innerHTML || '';
+          details.chosen = text;
+          return details;
+        }
       }
 
       const closest = getQuestionContainer(el);
       if (closest) {
         const lbl = closest.querySelector('label, legend, h3, span.fb-dash-form-element__label');
         const text = readText(lbl);
-        if (text) return text;
+        if (text) {
+          details.containerLabel = text;
+          details.chosen = text;
+          return details;
+        }
       }
 
-      return el.getAttribute('aria-label')?.trim() || el.getAttribute('placeholder')?.trim() || el.name || '';
+      details.chosen = details.ariaLabel || details.placeholder || details.name || '';
+      return details;
     };
 
     const buildSelector = (el) => {
@@ -197,13 +608,11 @@ const extractFields = async (page) => {
     const fields = [];
     const seenRadio = new Set();
     const seenCheckbox = new Set();
-    const allInputs = modal.querySelectorAll('input, select, textarea');
+    const allInputs = [...modal.querySelectorAll('input, select, textarea')].filter(isCandidateField);
 
     allInputs.forEach((el) => {
-      if (el.type === 'hidden') return;
-      if (el.closest('[style*="display: none"]')) return;
-
-      const label = getLabel(el);
+      const labelDetails = getLabelDetails(el);
+      const label = labelDetails.chosen;
       const required = !!(
         el.required ||
         el.getAttribute('aria-required') === 'true' ||
@@ -224,6 +633,7 @@ const extractFields = async (page) => {
           currentValue,
           is_required: required,
           is_answered: !required || !!el.value,
+          label_debug: labelDetails,
         });
         return;
       }
@@ -237,11 +647,11 @@ const extractFields = async (page) => {
         const selected = [...groupEls].find((r) => r.checked);
         const options = [...groupEls].map((r) => {
           const lbl = modal.querySelector(`label[for="${cssEscape(r.id)}"]`);
-          return lbl?.textContent?.trim() || r.value;
+          return readText(lbl) || r.value;
         }).filter(Boolean);
 
         const selectedLabel = selected
-          ? (modal.querySelector(`label[for="${cssEscape(selected.id)}"]`)?.textContent?.trim() || selected.value || '')
+          ? (readText(modal.querySelector(`label[for="${cssEscape(selected.id)}"]`)) || selected.value || '')
           : '';
 
         fields.push({
@@ -253,12 +663,14 @@ const extractFields = async (page) => {
           currentValue: selectedLabel,
           is_required: required || [...groupEls].some((r) => r.required || r.getAttribute('aria-required') === 'true'),
           is_answered: !!selected,
+          label_debug: labelDetails,
         });
         return;
       }
 
       if (el.type === 'checkbox') {
-        const groupLabel = getGroupLabel(el);
+        const groupDetails = getGroupLabelDetails(el);
+        const groupLabel = groupDetails.chosen;
         const container = getQuestionContainer(el);
         let groupEls = [];
 
@@ -316,6 +728,11 @@ const extractFields = async (page) => {
           currentValue: selectedLabels.join(', '),
           is_required: isRequired,
           is_answered: selectedLabels.length > 0 || !isRequired,
+          label_debug: {
+            ...labelDetails,
+            groupHeading: groupDetails.heading,
+            groupLabel: groupDetails.label,
+          },
         });
         return;
       }
@@ -331,6 +748,7 @@ const extractFields = async (page) => {
         currentValue,
         is_required: required,
         is_answered: currentValue.length > 0 || !required,
+        label_debug: labelDetails,
       });
     });
 
@@ -356,16 +774,48 @@ const findAnswer = (label, qaTemplates, jobRole) => {
   return candidates[0] || null;
 };
 
+const dedupeCapturedQuestions = (questions) => {
+  const seen = new Map();
+
+  for (const rawQuestion of questions || []) {
+    const question = sanitizeCapturedQuestion(rawQuestion);
+    if (!question?.question_text) continue;
+
+    const key = collapseWhitespace(
+      question.question_key ||
+      `${question.question_text}|${question.field_type || 'text'}|${question.selector || ''}`
+    ).toLowerCase();
+
+    const existing = seen.get(key);
+    if (!existing) {
+      seen.set(key, question);
+      continue;
+    }
+
+    seen.set(key, {
+      ...existing,
+      ...question,
+      options: question.options?.length ? question.options : existing.options,
+      currentValue: question.currentValue || existing.currentValue || '',
+      is_required: existing.is_required || question.is_required,
+      is_answered: existing.is_answered || question.is_answered,
+      label_debug: question.label_debug || existing.label_debug,
+    });
+  }
+
+  return [...seen.values()];
+};
+
 const applyTemplateToField = async (page, field, template, logger) => {
-  if (!template || !field.selector) return false;
   if (field.is_answered && field.currentValue) return true;
+  if (!template || !field.selector) return false;
 
   logger.info(`Filling "${field.question_text}" -> "${template.answer}"`);
 
   try {
     if (field.field_type === 'select') {
       await page.waitForSelector(field.selector, { timeout: 5000 });
-      const matched = await page.evaluate((selector, answer) => {
+      const matched = await page.evaluate(({ selector, answer }) => {
         const el = document.querySelector(selector);
         if (!el) return false;
 
@@ -386,20 +836,42 @@ const applyTemplateToField = async (page, field, template, logger) => {
         }
 
         return false;
-      }, field.selector, template.answer);
+      }, { selector: field.selector, answer: template.answer });
 
       await sleep(randomInt(200, 500));
       return matched;
     }
 
     if (field.field_type === 'radio') {
-      const matched = await page.evaluate((selector, answer) => {
+      const matched = await page.evaluate(({ selector, answer }) => {
+        const readLabelText = (node) => {
+          if (!node) return '';
+
+          const clone = node.cloneNode(true);
+          clone
+            .querySelectorAll('.visually-hidden, .artdeco-visually-hidden, .screen-reader-text, .sr-only')
+            .forEach((el) => el.remove());
+
+          const text = (clone.textContent || node.textContent || '').replace(/\s+/g, ' ').trim();
+          if (!text) return '';
+
+          const half = text.length / 2;
+          if (Number.isInteger(half)) {
+            const left = text.slice(0, half).trim();
+            const right = text.slice(half).trim();
+            if (left && left === right) return left;
+          }
+
+          return text;
+        };
+
         const nodes = [...document.querySelectorAll(selector)];
         const lower = answer.toLowerCase();
 
         for (const node of nodes) {
-          const label =
-            (document.querySelector(`label[for="${node.id}"]`)?.textContent || node.value || '').trim().toLowerCase();
+          const label = (readLabelText(document.querySelector(`label[for="${node.id}"]`)) || node.value || '')
+            .trim()
+            .toLowerCase();
           if (label.includes(lower) || lower.includes(label)) {
             node.click();
             return true;
@@ -407,7 +879,7 @@ const applyTemplateToField = async (page, field, template, logger) => {
         }
 
         return false;
-      }, field.selector, template.answer);
+      }, { selector: field.selector, answer: template.answer });
 
       await sleep(randomInt(200, 400));
       return matched;
@@ -464,6 +936,11 @@ const getValidationMessages = async (page) => {
 const persistStepQuestions = async (appId, account, job, stepIndex, questions) => {
   if (!appId) return;
 
+  const uniqueQuestions = dedupeCapturedQuestions(questions).map((question) => ({
+    ...question,
+    step_index: stepIndex,
+  }));
+
   await applicationQuestions.upsertMany(
     appId,
     {
@@ -474,11 +951,11 @@ const persistStepQuestions = async (appId, account, job, stepIndex, questions) =
       company_name: job.company || null,
       step_index: stepIndex,
     },
-    questions.map((question) => ({
+    uniqueQuestions.map((question) => ({
       question_text: question.question_text,
       field_type: question.field_type,
       options: question.options,
-      answer: question.currentValue || '',
+      answer: question.currentValue || null,
       is_required: question.is_required,
       is_answered: question.is_answered,
       step_index: stepIndex,
@@ -487,8 +964,9 @@ const persistStepQuestions = async (appId, account, job, stepIndex, questions) =
 };
 
 const fillCurrentStep = async (page, qaTemplates, job, stepIndex, logger) => {
-  const beforeFields = await extractFields(page);
+  const beforeFields = dedupeCapturedQuestions(await extractFields(page));
   logger.info(`Fields in this step: ${beforeFields.length}`);
+  logFieldLabelDebug(beforeFields, stepIndex, logger);
 
   let filled = 0;
 
@@ -498,13 +976,13 @@ const fillCurrentStep = async (page, qaTemplates, job, stepIndex, logger) => {
     if (ok) filled++;
   }
 
-  const afterFields = await extractFields(page);
+  const afterFields = dedupeCapturedQuestions(await extractFields(page));
   const afterMap = new Map(afterFields.map((field) => [field.question_key, field]));
 
-  const questions = beforeFields.map((field) => {
+  const questions = dedupeCapturedQuestions(beforeFields.map((field) => {
     const latest = afterMap.get(field.question_key) || field;
     return { ...latest, step_index: stepIndex };
-  });
+  }));
 
   const pendingQuestions = getPendingQuestions(questions);
   logger.info(`Filled ${filled}/${beforeFields.length} fields`);
@@ -549,7 +1027,6 @@ const getFooterAction = async (page) => {
     { sel: 'button[aria-label*="Review your application"]', type: 'review' },
     { sel: 'button[aria-label*="Continue to next step"]', type: 'next' },
     { sel: 'button[aria-label*="Next"]', type: 'next' },
-    { sel: 'button[aria-label*="Continue"]', type: 'continue' },
     { sel: '.jobs-easy-apply-modal footer .artdeco-button--primary', type: 'primary' },
     { sel: '.artdeco-modal__actionbar .artdeco-button--primary', type: 'primary' },
   ];
@@ -572,10 +1049,20 @@ const getFooterAction = async (page) => {
 const isModalOpen = async (page) => {
   try {
     const el = await page.$(MODAL_SEL);
-    return !!el && (await el.isVisible());
+    if (el && (await el.isVisible())) return true;
   } catch {
-    return false;
+    // fall through to apply-page detection
   }
+
+  if (!isApplyFlowUrl(page.url())) return false;
+
+  return page.evaluate(() => {
+    return !!(
+      document.querySelector('[data-live-test-job-apply-page]') ||
+      document.querySelector('form[action*="/apply"]') ||
+      document.querySelector('input, select, textarea')
+    );
+  }).catch(() => false);
 };
 
 const isSuccess = async (page) => {
@@ -733,6 +1220,14 @@ const applyToJob = async (page, job, account, qaTemplates, logger) => {
       await sleep(randomInt(1500, 2500));
     }
 
+    const targetCheck = await confirmExpectedJobContext(page, job);
+    if (!targetCheck.ok) {
+      const reason = buildJobMismatchMessage(job, targetCheck.actual);
+      logger.warn(reason);
+      if (appId) await applications.updateStatus(appId, 'manual_review', reason);
+      return 'skipped';
+    }
+
     const opened = await openEasyApplyModal(page, logger);
     if (!opened) {
       if (appId) await applications.updateStatus(appId, 'manual_review', 'Easy Apply modal did not open');
@@ -806,19 +1301,17 @@ const applyToJob = async (page, job, account, qaTemplates, logger) => {
         }
 
         if (await isModalOpen(page)) {
-          const afterSubmitQuestions = (await extractFields(page)).map((question) => ({
+          const afterSubmitQuestions = dedupeCapturedQuestions((await extractFields(page)).map((question) => ({
             ...question,
             step_index: step,
-          }));
-          await persistStepQuestions(appId, account, job, step, afterSubmitQuestions);
+          })));
 
           const validationMessages = await getValidationMessages(page);
           const pendingQuestions = getPendingQuestions(afterSubmitQuestions);
           const blockingQuestions = getBlockingQuestions(afterSubmitQuestions);
-          if (
-            buildQuestionSignature(afterSubmitQuestions) === beforeSignature
-          ) {
+          if (buildQuestionSignature(afterSubmitQuestions) === beforeSignature) {
             logger.warn(`Application did not advance after ${action.type}`);
+            await persistStepQuestions(appId, account, job, step, afterSubmitQuestions);
             const pendingReason = await moveApplicationToPendingQuestions(
               appId,
               blockingQuestions,
@@ -856,11 +1349,10 @@ const applyToJob = async (page, job, account, qaTemplates, logger) => {
         break;
       }
 
-      const postActionQuestions = (await extractFields(page)).map((question) => ({
+      const postActionQuestions = dedupeCapturedQuestions((await extractFields(page)).map((question) => ({
         ...question,
         step_index: step,
-      }));
-      await persistStepQuestions(appId, account, job, step, postActionQuestions);
+      })));
 
       const validationMessages = await getValidationMessages(page);
       const pendingQuestions = getPendingQuestions(postActionQuestions);
@@ -869,6 +1361,7 @@ const applyToJob = async (page, job, account, qaTemplates, logger) => {
 
       if (afterSignature === beforeSignature) {
         logger.warn(`Application did not advance after ${action.type}`);
+        await persistStepQuestions(appId, account, job, step, postActionQuestions);
         const pendingReason = await moveApplicationToPendingQuestions(
           appId,
           blockingQuestions,

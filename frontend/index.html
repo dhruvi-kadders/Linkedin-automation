@@ -3,10 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>LinkedIn Auto-Apply Bot</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/style.css?v=20260421-ui" />
 </head>
 <body>
 <aside class="sidebar">
@@ -219,6 +222,24 @@
     </div>
 
     <div class="card form-card">
+      <div class="qa-profile-topbar">
+        <div>
+          <h3>Common Answers</h3>
+          <p class="page-subtitle">Select an account, fill the common answers once, and the bot will reuse them for that account.</p>
+        </div>
+        <div class="form-group qa-profile-account">
+          <label>Account *</label>
+          <select id="qaProfileAccount"><option value="">Select account...</option></select>
+        </div>
+      </div>
+      <div class="qa-profile-status" id="qaProfileStatus">Select an account to load the saved answers for that user.</div>
+      <div id="qaProfileFields" class="qa-profile-form"></div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="saveQAProfileBtn">Save QA Profile</button>
+      </div>
+    </div>
+
+    <div class="card form-card">
       <h3>Add Template</h3>
       <div class="form-row">
         <div class="form-group">
@@ -284,23 +305,24 @@
 
     <div class="card">
       <h3>Pending Questions</h3>
-      <table class="data-table" id="pendingQuestionsTable">
-        <thead>
-          <tr>
-            <th>Job Role</th>
-            <th>Job</th>
-            <th>Question</th>
-            <th>Type</th>
-            <th>Options</th>
-            <th>Account</th>
-            <th>Answer</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="pendingQuestionsBody">
-          <tr><td colspan="8" class="empty-state">Loading...</td></tr>
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table class="data-table" id="pendingQuestionsTable">
+          <thead>
+            <tr>
+              <th>Job Role</th>
+              <th>Job</th>
+              <th>Question</th>
+              <th>Type</th>
+              <th>Account</th>
+              <th>Answer</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="pendingQuestionsBody">
+            <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card">
@@ -342,7 +364,7 @@
             <th>Location</th>
             <th>Account</th>
             <th>Found</th>
-            <th>Link</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody id="manualTableBody">
@@ -368,9 +390,35 @@
   </section>
 </main>
 
+<div class="job-record-modal hidden" id="jobRecordModal" aria-hidden="true">
+  <div class="job-record-panel" role="dialog" aria-modal="true" aria-labelledby="jobRecordTitle">
+    <div class="job-record-header">
+      <div>
+        <h3 id="jobRecordTitle">Job Record</h3>
+        <div class="job-record-subtitle" id="jobRecordSubtitle">Loading saved application details...</div>
+      </div>
+      <button class="btn btn-secondary btn-sm" id="closeJobRecordBtn" type="button">Close</button>
+    </div>
+
+    <div class="job-record-notice" id="jobRecordNotice"></div>
+
+    <div class="job-record-meta" id="jobRecordMeta"></div>
+
+    <div class="job-record-section">
+      <div class="job-record-section-title">Saved URLs</div>
+      <div class="job-record-links" id="jobRecordLinks"></div>
+    </div>
+
+    <div class="job-record-section">
+      <div class="job-record-section-title">Captured Questions</div>
+      <div class="job-record-questions" id="jobRecordQuestions"></div>
+    </div>
+  </div>
+</div>
+
 <div class="toast hidden" id="toast"></div>
 
-<script src="js/api.js"></script>
-<script src="js/app.js"></script>
+<script src="js/api.js?v=20260421-ui"></script>
+<script src="js/app.js?v=20260421-ui"></script>
 </body>
 </html>

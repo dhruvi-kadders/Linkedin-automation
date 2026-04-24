@@ -18,7 +18,9 @@ class WorkerManager extends EventEmitter {
   /**
    * Start bot for a single account
    */
-  start(accountId) {
+  start(accountId, options = {}) {
+    const { prioritizedApplicationId = null } = options;
+
     if (this.workers.has(accountId)) {
       throw new Error(`Worker for account ${accountId} is already running`);
     }
@@ -27,7 +29,7 @@ class WorkerManager extends EventEmitter {
     }
 
     const worker = new Worker(WORKER_SCRIPT, {
-      workerData: { accountId },
+      workerData: { accountId, prioritizedApplicationId },
       // Share the event loop but isolate execution
       resourceLimits: { maxOldGenerationSizeMb: 512 },
     });

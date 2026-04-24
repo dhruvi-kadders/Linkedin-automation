@@ -9,7 +9,10 @@ const { applyToJob } = require('./easy-apply');
 const { accounts, searchConfigs, qaTemplates, applications } = require('../db');
 const { sleep, randomInt } = require('../utils/humanize');
 
-const { accountId } = workerData;
+const {
+  accountId,
+  prioritizedApplicationId = null,
+} = workerData;
 
 const emit = (type, payload) => parentPort.postMessage({ type, accountId, payload });
 
@@ -68,7 +71,10 @@ const logger = {
 
     const stats = { applied: 0, failed: 0, skipped: 0, pending_questions: 0, manual_review: 0 };
 
-    const retryQueue = await applications.getRetryQueue(accountId, null);
+    const retryQueue = await applications.getRetryQueue(accountId, null, prioritizedApplicationId);
+    if (prioritizedApplicationId) {
+      logger.info(`Prioritizing retry application ${prioritizedApplicationId}`);
+    }
     const seenRetryJobs = new Set();
     for (const row of retryQueue.rows) {
       const retryKey = row.job_url || `${row.job_title}|${row.company_name}`;

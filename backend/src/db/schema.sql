@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS application_questions (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_application_questions_unique
-  ON application_questions(application_id, question_text, step_index);
+  ON application_questions(application_id, question_text);
 CREATE INDEX IF NOT EXISTS idx_application_questions_account
   ON application_questions(account_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_application_questions_application
@@ -150,3 +150,23 @@ SELECT
 FROM accounts a
 LEFT JOIN job_applications ja ON ja.account_id = a.id
 GROUP BY a.id, a.label, a.email, a.status;
+
+-- ─────────────────────────────────────────
+-- Stores parsed resume for each account
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS account_resume_profiles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id UUID NOT NULL UNIQUE REFERENCES accounts(id) ON DELETE CASCADE,
+
+    full_name VARCHAR(255),
+    phone VARCHAR(50),
+    linkedin_url TEXT,
+    summary TEXT,
+
+    raw_text TEXT,
+    parsed_profile JSONB NOT NULL,
+    total_experience_years NUMERIC(6,2) DEFAULT 0,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

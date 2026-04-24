@@ -185,6 +185,15 @@ router.get('/applications/:applicationId/questions', async (req, res) => {
   res.json(result.rows);
 });
 
+router.get('/applications/:applicationId/context', async (req, res) => {
+  const context = await db.applications.getContext(req.params.applicationId);
+  if (!context.application) {
+    return res.status(404).json({ error: 'Application not found' });
+  }
+
+  res.json(context);
+});
+
 router.get('/pending-questions', async (req, res) => {
   const accountId = req.query.accountId || null;
   const result = await db.applicationQuestions.getPending(accountId);
@@ -265,7 +274,7 @@ router.post('/applications/:applicationId/retry', async (req, res) => {
     workerAlreadyRunning = true;
   } else {
     try {
-      manager.start(application.account_id);
+      manager.start(application.account_id, { prioritizedApplicationId: application.id });
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }
@@ -275,9 +284,13 @@ router.post('/applications/:applicationId/retry', async (req, res) => {
   res.json({
     queued: true,
     status,
+    applicationId: application.id,
     accountId: application.account_id,
     workerStarted,
     workerAlreadyRunning,
+    prioritizedApplicationId: workerStarted ? application.id : null,
+    willRetryOnCurrentRun: workerStarted,
+    willRetryOnNextRun: workerAlreadyRunning,
   });
 });
 

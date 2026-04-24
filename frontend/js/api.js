@@ -83,6 +83,9 @@ class LinkedInBotAPI {
   getApplicationQuestions(applicationId, includeAnswered = true) {
     return this._get(`/applications/${applicationId}/questions?includeAnswered=${includeAnswered}`);
   }
+  getApplicationContext(applicationId) {
+    return this._get(`/applications/${applicationId}/context`);
+  }
   getPendingApplications(accountId) {
     return this._get(`/pending-applications${accountId ? '?accountId=' + accountId : ''}`);
   }
